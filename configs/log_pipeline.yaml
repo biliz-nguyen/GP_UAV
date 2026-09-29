@@ -1,0 +1,46 @@
+master_rate_hz: 10.0
+frame_output: ENU
+maximum_source_age_ms:
+  PSCN: 180
+  PSCE: 180
+  PSCD: 180
+  XKF1: 180
+  XKF4: 250
+  ATT: 180
+  BAT: 180
+  RCOU: 180
+  CTUN: 180
+  GPS: 350
+gap_threshold_ms:
+  default: 500
+  GPS: 600
+alignment_method_by_source:
+  PSCN: previous
+  PSCE: previous
+  PSCD: previous
+  XKF1: previous
+  XKF4: previous
+  ATT: previous
+  BAT: previous
+  RCOU: previous
+  CTUN: previous
+  GPS: previous
+minimum_samples_for_learning: 200
+minimum_train_samples: 100
+minimum_test_samples: 30
+learning_features_by_axis:
+  x: [px, py, vx, vy, yaw]
+  y: [px, py, vx, vy, yaw]
+  z: [pz, vz, yaw]
+battery_instance: 0
+gps_instance: 0
+battery_plausibility_bounds:
+  voltage: [9.0, 12.8]
+  current: [0.5, 150.0]
+velocity_plausibility_bounds: [0.0, 30.0]
+acceleration_plausibility_bounds: [-40.0, 40.0]
+motor_output_plausibility_bounds: [0, 2200]
+split:
+  method: chronological
+  train_fraction: 0.7
+  holdout_flight_id: null

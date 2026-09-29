@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinylb-f405-data"
+version = "0.1.0"
+description = "Traceable ArduPilot DataFlash research data foundation"
+requires-python = ">=3.11"
+dependencies = ["pymavlink==2.4.50", "numpy>=1.26,<3", "pandas>=2.2,<4", "matplotlib>=3.8,<4", "PyYAML>=6,<7"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["integration: reads the real DataFlash file when available"]

@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+results/*
+!results/.gitkeep
+.superpowers/
+docs/requirements.md
+docs/implementation_plan.md
+docs/pre_extraction_audit.md
+docs/final_audit.md

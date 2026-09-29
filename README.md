@@ -22,7 +22,7 @@ Place an unchanged copy of your log at `data/raw/flight.bin`. Raw logs, processe
 From the repository root:
 
 ```powershell
-python -m src.log_pipeline.inspect_log data/raw/flight.bin
+python -m src.log_pipeline.inspect_log data/raw/flight.bin --config configs/log_pipeline.yaml
 python -m src.log_pipeline.extract_dataset data/raw/flight.bin --inspection results/log_inspection/log_summary.json --config configs/log_pipeline.yaml
 python -m src.log_pipeline.validate_dataset data/processed/all_flights.csv
 python -m pytest -q
@@ -31,13 +31,11 @@ $env:REAL_LOG_PATH = "data/raw/flight.bin"
 python -m pytest -q
 ```
 
-The inspector writes JSON/text summaries, message/field inventories, per-instance timing, armed segments and mode intervals to `results/log_inspection/`. It returns exit code 2 if parsing or metadata has a critical error while still writing diagnostic reports. Do not treat that exit as permission to discard errors.
+The inspector writes JSON/text summaries, message/field inventories, per-instance timing, armed segments, mode intervals, PSC activity, physical-quality checks and vibration summaries to `results/log_inspection/`. It returns exit code 2 if parsing or metadata has a critical error while still writing diagnostic reports. A single known incomplete final packet, without interior corruption or other parser diagnostics, is `PASS_WITH_WARNINGS`; the raw bytes and all EOF details remain intact. See [Inspector reporting definitions](docs/inspector.md) for units, rates, interval policies and the meaning of `FREEZE_PART1`.
 
 Extraction consumes the raw log and inspector summary, verifies checksums and metadata, then writes separate flight CSVs, `all_flights.csv`, `gp_residual_dataset.csv`, raw battery/ESC telemetry and a lineage manifest to `data/processed/`. Validation writes reports/statistics/outlier flags to `results/validation/` and separate matplotlib PNGs to `results/plots/`. Validator exit code 2 means structural failure; per-model `NOT_READY` is reported separately from structural validity.
 
-An incomplete final packet is a critical diagnostic and extraction rejects it by default. The raw file is never repaired or truncated. An explicit `--allow-truncated-tail` exception may use only the complete-message prefix when authorized; it cannot permit interior corruption, arbitrary garbage, unresolved metadata or timestamp errors. All evidence remains in the local manifest and warnings.
-
-Only after accepting that exception, append `--allow-truncated-tail` to the extraction command above. Use `--flight-id 3` to select one armed interval; repeat the flag to select several. `--holdout-flight-id 3` chooses a later suitable flight for testing instead of the default chronological row split.
+The Inspector hardening task does not execute or change the existing extractor. That extractor still rejects incomplete logs, including the new EOF-warning shape even with its legacy `--allow-truncated-tail` option. Its acceptance adapter must be reconciled in a separately scoped extractor task before using incomplete input. Inspector `PASS_WITH_WARNINGS` and `AVAILABLE` are not extraction permission or ML readiness. Raw files are never repaired or truncated.
 
 ## Scientific conventions
 

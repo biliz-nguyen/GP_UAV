@@ -16,6 +16,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from .utils import sha256_file
+from .inspection_metrics import inventory_statistics, load_inspection_config, distribution
 
 REVISION = "2b5cebb933d91e92f7bab768268e41c2960b6ae4"
 SOURCE_ROOT = f"https://github.com/ArduPilot/ardupilot/blob/{REVISION}/"
@@ -133,25 +134,55 @@ def _metadata(records, decoder_formats):
                 "nan_invalid_count": invalid,
                 "nonnumeric_sample_count": len(values) - len(finite) - invalid,
             })
-    return formats, inventory, units, multipliers, list(dict.fromkeys(conflicts))
+    expanded = []
+    for info in inventory:
+        rows = records.get(info['message'], [])
+        expanded.append(inventory_statistics(info, [r.get(info['field']) for r in rows]))
+        instance_field = formats[info['message']]['instance_field']
+        if instance_field:
+            groups = defaultdict(list)
+            for row in rows:
+                groups[row.get(instance_field)].append(row.get(info['field']))
+            for instance, values in sorted(groups.items(), key=lambda item: str(item[0])):
+                expanded.append(inventory_statistics(info, values, instance, 'instance'))
+    return formats, expanded, units, multipliers, list(dict.fromkeys(conflicts))
 
 
-def _timing_stats(name, rows, instance=None, instance_field=None):
+def _timing_stats(name, rows, instance=None, instance_field=None, rate_config=None):
+    policy = rate_config or load_inspection_config()['rate']
     times = [r["time_s"] for r in rows if _finite(r.get("time_s"))]
     dt = [b - a for a, b in zip(times, times[1:])]
-    span = max(times) - min(times) if times else 0
-    return {
+    positive = [d for d in dt if d > 0]
+    median = statistics.median(positive) if positive else None
+    threshold = max(policy['absolute_gap_threshold_s'], policy['gap_multiplier'] * median) if median is not None else policy['absolute_gap_threshold_s']
+    active = [d for d in dt if 0 < d <= threshold]
+    span = times[-1] - times[0] if times else 0
+    out = {
         "message": name, "instance_field": instance_field, "instance": instance,
         "count": len(rows), "timestamped_count": len(times),
         "first_time_s": times[0] if times else None,
         "last_time_s": times[-1] if times else None,
         "mean_rate_hz": (len(times) - 1) / span if span > 0 else None,
-        "median_dt_s": statistics.median(dt) if dt else None,
+        "aggregate_span_rate_hz": (len(times) - 1) / span if span > 0 else None,
+        "nominal_rate_hz": 1 / median if median else None,
+        "active_window_rate_hz": len(active) / sum(active) if active else None,
+        "active_duration_s": sum(active),
+        "active_window_count": 1 + sum(d < 0 or d > threshold for d in dt) if times else 0,
+        "gap_threshold_s": threshold, "rate_scope": 'instance' if instance_field else 'message',
+        "first_timestamp": times[0] if times else None,
+        "last_timestamp": times[-1] if times else None,
+        "median_dt_s": median,
         "minimum_dt_s": min(dt) if dt else None,
         "maximum_dt_s": max(dt) if dt else None,
         "duplicate_timestamp_count": sum(d == 0 for d in dt),
         "backward_timestamp_count": sum(d < 0 for d in dt),
     }
+    if name == 'ESC':
+        out['statistics_space'] = 'decoded; units and factors in field_inventory.csv'
+        for field in ('RPM', 'RawRPM', 'Volt', 'Curr', 'Temp'):
+            stats = distribution([r.get(field) for r in rows])
+            out.update({f'{field}_{key}': stats[key] for key in ('min', 'max', 'median')})
+    return out
 
 
 def _build_segments(records, first_time, last_time, mode_names):
@@ -269,13 +300,14 @@ def _segment_status(records, start, end):
     }
 
 
-def scan_log(path: str | Path) -> ScanResult:
-    """Scan every decodable message. Problems are explicit in critical_errors.
+def scan_log(path: str | Path, *, inspection_config=None) -> ScanResult:
+    """Scan every decodable message. Classify known EOF truncation as warning.
 
-    The inspector may write diagnostics for damaged input; consumers producing
-    numerical datasets MUST reject nonempty summary['critical_errors'].
+    Consumers must check completeness and parser diagnostics as well as
+    critical_errors: a warning does not authorize use of incomplete input.
     """
     from pymavlink import DFReader, mavutil
+    config = inspection_config or load_inspection_config()
 
     raw = Path(path).resolve()
     if raw.stat().st_size == 0:
@@ -347,14 +379,24 @@ def scan_log(path: str | Path) -> ScanResult:
     }
     diagnostic_lines = len(diagnostics["stdout"]) + len(diagnostics["stderr"])
     errors = len(skipped) + bool(trailing_count) + bool(exception) + diagnostic_lines
-    if errors:
+    benign_tail = (trailing_kind == 'truncated_message' and reached_eof
+                   and not skipped and not exception and not diagnostic_lines)
+    events = []
+    if benign_tail:
+        events.append({'severity': 'WARNING', 'code': 'TRAILING_TRUNCATED_MESSAGE_AT_EOF',
+                       'offset': last_end, 'available_bytes': trailing_count,
+                       'expected_bytes': diagnostics['trailing_expected_message_bytes']})
+    elif errors:
+        events.append({'severity': 'CRITICAL', 'code': 'PARSER_CORRUPTION_OR_UNRESOLVED_DIAGNOSTIC'})
         critical.append(f"Parser anomalies detected ({errors} diagnostic events); inspect parser_diagnostics")
+    diagnostics['events'] = events
+    parser_status = 'FAIL' if errors and not benign_tail else 'PASS_WITH_WARNINGS' if benign_tail else 'PASS'
     if before != after:
         critical.append("Raw SHA256 changed during parsing")
     if not count:
         critical.append("No messages decoded")
     timestamp_metadata = {}
-    field_index = {(r["message"], r["field"]): r for r in inventory}
+    field_index = {(r["message"], r["field"]): r for r in inventory if r['inventory_scope'] == 'message'}
     for name, rows in records.items():
         if "TimeUS" in formats[name]["fields"]:
             info = field_index[name, "TimeUS"]
@@ -372,14 +414,21 @@ def scan_log(path: str | Path) -> ScanResult:
     message_stats, instance_stats = [], []
     for name in sorted(formats):
         rows = records.get(name, [])
-        message_stats.append(_timing_stats(name, rows))
+        aggregate = _timing_stats(name, rows, rate_config=config['rate'])
+        message_stats.append(aggregate)
         instance_field = formats[name]["instance_field"]
         if instance_field:
             groups = defaultdict(list)
             for row in rows:
                 groups[row.get(instance_field)].append(row)
             for instance, group in sorted(groups.items(), key=lambda item: str(item[0])):
-                instance_stats.append(_timing_stats(name, group, instance, instance_field))
+                instance_stats.append(_timing_stats(name, group, instance, instance_field, config['rate']))
+            if len(groups) > 1:
+                aggregate.update(nominal_rate_hz=None, active_window_rate_hz=None,
+                                 active_duration_s=None, median_dt_s=None,
+                                 minimum_dt_s=None, maximum_dt_s=None,
+                                 gap_threshold_s=None, active_window_count=None,
+                                 rate_scope='mixed_instances_count_only')
     params = {r["Name"]: r["Value"] for r in records.get("PARM", [])}
     messages = [_text(r.get("Message", "")) for r in records.get("MSG", [])]
     firmware = next((m for m in messages if m.startswith(("ArduCopter", "ArduPlane", "ArduRover", "ArduSub"))), None)
@@ -393,7 +442,7 @@ def scan_log(path: str | Path) -> ScanResult:
         if row["backward_timestamp_count"]:
             warnings.append(f"{row['message']} instance {row['instance']}: {row['backward_timestamp_count']} backward timestamp transitions")
     summary = {
-        "schema_version": 1, "input_path": str(raw), "file_size_bytes": size,
+        "schema_version": 2, "input_path": str(raw), "file_size_bytes": size,
         "raw_sha256": before, "raw_sha256_after": after, "raw_unchanged": before == after,
         "parsing_library": "pymavlink", "pymavlink_version": version("pymavlink"),
         "firmware": firmware, "board": board, "frame": frame, "firmware_messages": messages,
@@ -405,7 +454,8 @@ def scan_log(path: str | Path) -> ScanResult:
         "scan_complete": reached_eof and last_end == size and exception is None and not skipped,
         "reached_parser_eof": reached_eof,
         "whole_file_audited": reached_eof and last_end + trailing_count == size,
-        "parser_diagnostics": diagnostics, "critical_errors": list(dict.fromkeys(critical)),
+        "parser_diagnostics": diagnostics, "parser_status": parser_status,
+        "critical_errors": list(dict.fromkeys(critical)),
         "message_counts": {name: len(rows) for name, rows in sorted(records.items())},
         "message_stats": message_stats, "instance_message_stats": instance_stats,
         "formats": formats, "units": units, "multipliers": multipliers,

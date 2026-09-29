@@ -141,7 +141,11 @@ def test_trailing_bytes_are_never_silently_ignored(tmp_path, tail):
     scan = scan_log(synthetic_log(tmp_path / "fixture.bin", tail=tail))
     assert scan.summary["parser_error_count"] > 0
     assert scan.summary["parser_diagnostics"]["trailing_byte_count"] == len(tail)
-    assert scan.summary["critical_errors"]
+    if tail == b"\xa3\x95\x84\x00":
+        assert not scan.summary["critical_errors"]
+        assert scan.summary['parser_status'] == 'PASS_WITH_WARNINGS'
+    else:
+        assert scan.summary["critical_errors"]
 
 
 def test_malformed_bytes_between_messages_are_reported_and_later_records_scanned(tmp_path):
@@ -280,12 +284,18 @@ def test_real_log_inspection_and_raw_immutability(tmp_path):
     assert "FMT" in summary["message_counts"]
     assert any(name in summary["message_counts"] for name in ("ATT", "IMU", "GPS", "XKF1"))
     assert summary["whole_file_audited"]
+    baseline = os.environ.get('INSPECTION_BASELINE_PATH')
+    if baseline:
+        previous = json.loads(Path(baseline).read_text(encoding='utf-8-sig'))
+        assert summary['message_counts'] == previous['message_counts']
+        assert summary['raw_sha256'] == previous['raw_sha256']
     diagnostics = summary["parser_diagnostics"]
     assert diagnostics["skipped_byte_count"] == 0
     if diagnostics["trailing_byte_count"]:
         assert diagnostics["trailing_kind"] == "truncated_message"
         assert 3 <= diagnostics["trailing_byte_count"] < diagnostics["trailing_expected_message_bytes"]
-        assert len(summary["critical_errors"]) == 1
+        assert not summary["critical_errors"]
+        assert summary['parser_status'] == 'PASS_WITH_WARNINGS'
     else:
         assert summary["scan_complete"]
         assert not summary["critical_errors"]

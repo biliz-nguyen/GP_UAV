@@ -1,4 +1,30 @@
 master_rate_hz: 10.0
+# Inspector policies only: warnings/statistics, never filtering or corrections.
+rate:
+  gap_multiplier: 5.0
+  absolute_gap_threshold_s: 0.5
+physical_checks:
+  minimum_samples: 10
+  warning_fraction: 0.8
+  battery:
+    instance: 0
+    min_plausible_voltage: 9.0
+    max_plausible_voltage: 13.0
+    min_flying_current_a: 3.0
+  esc:
+    min_plausible_voltage: 5.0
+    max_plausible_voltage: 60.0
+    min_voltage_ratio_to_battery: 0.5
+    max_voltage_ratio_to_battery: 1.5
+    comparison_max_age_s: 0.2
+    zero_current_epsilon_a: 0.01
+    rpm_active_floor: 1000.0
+    rpm_cross_instance_ratio_warning: 3.0
+vibration:
+  summary_percentiles: [95, 99]
+inspector_availability:
+  minimum_paired_samples: 2
+  minimum_candidate_duration_s: 0.1
 frame_output: ENU
 maximum_source_age_ms:
   PSCN: 180
